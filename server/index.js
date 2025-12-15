@@ -24,7 +24,10 @@ const TARGETS = [
     { name: "Server EU (Berlin)", lat: 52.5200, lng: 13.4050 },
     { name: "Server Asia (Tokyo)", lat: 35.6762, lng: 139.6503 },
     { name: "Server SA (Sao Paulo)", lat: -23.5505, lng: -46.6333 },
-    { name: "Server AU (Sydney)", lat: -33.8688, lng: 151.2093 }
+    { name: "Server AU (Sydney)", lat: -33.8688, lng: 151.2093 },
+    { name: "Server IN (Mumbai)", lat: 19.0760, lng: 72.8777 },
+    { name: "Server IN (Delhi)", lat: 28.7041, lng: 77.1025 },
+    { name: "Server IN (Bangalore)", lat: 12.9716, lng: 77.5946 }
 ];
 
 function getRandomTarget() {
@@ -33,7 +36,7 @@ function getRandomTarget() {
 
 async function broadcastThreats() {
     try {
-        console.log("🔄 Cycle Start: Fetching new intelligence...");
+        console.log("Cycle Start: Fetching new intelligence...");
         
         
         const rawData = await fetchThreats();
@@ -66,7 +69,7 @@ async function broadcastThreats() {
 
 
 io.on('connection', (socket) => {
-    console.log('👤 New Client Connected:', socket.id);
+    console.log('👤 New Client Connected:', socket.id); 
     
   
 });

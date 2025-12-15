@@ -1,4 +1,4 @@
-const { fetchThreats } = require('./collector');
+const { fetchThreats } = require('./services/collector');
 // async function testing() {
 //     const data = await fetchThreats();
 //     console.log(data);
@@ -49,7 +49,7 @@ const { fetchThreats } = require('./collector');
 
 // the following function is to test the locator functionality
 
-const { enrichThreatData } = require('./locator');
+const { enrichThreatData } = require('./services/locator');
 
 async function testLocator() {
     console.log("fetching few data first...");
