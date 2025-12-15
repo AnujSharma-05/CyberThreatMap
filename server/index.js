@@ -78,12 +78,13 @@ setInterval(broadcastThreats, 60000);
 
 broadcastThreats();
 
-const PORT = 4000;
+
+
+const PORT = process.env.PORT || 4000;
+
 server.listen(PORT, () => {
     console.log(`
-    🚀  COMMAND CENTER ACTIVE
-    -----------------------
-    Server running on: http://localhost:${PORT}
-    Socket Endpoint:   ws://localhost:${PORT}
-    `);
+        Backend is alive! 
+        Server running on: http://localhost:${PORT}
+        Socket Endpoint: ws://localhost:${PORT}`);
 });
