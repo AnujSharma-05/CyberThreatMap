@@ -18,5 +18,5 @@ yarn-debug.log*
 yarn-error.log*
 
 # Local Data (Optional: if you don't want to commit your cache)
-*.json
+# *.json  # Don't ignore package.json files!
 *.log

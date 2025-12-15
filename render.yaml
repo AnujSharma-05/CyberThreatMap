@@ -1,0 +1,17 @@
+services:
+  # Backend API Server
+  - type: web
+    name: cyber-threat-map-backend
+    runtime: node
+    buildCommand: cd server && npm install
+    startCommand: cd server && node index.js
+    envVars:
+      - key: NODE_ENV
+        value: production
+    
+  # Frontend React App
+  - type: web
+    name: cyber-threat-map-frontend
+    runtime: node
+    buildCommand: cd client && npm install && npm run build
+    staticPublishPath: ./client/build
