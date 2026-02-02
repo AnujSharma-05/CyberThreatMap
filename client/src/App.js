@@ -30,8 +30,11 @@ function App() {
       const attackers = data.map(d => ({
         lat: d.src.lat,
         lng: d.src.lng,
-        text: d.src.city.toUpperCase(), // Clean Uppercase Text
-        color: 'rgba(255, 60, 60, 0.9)', // Red
+        // --- NEW LABEL FORMAT ---
+        // Shows: [192.168.x.x] BERLIN
+        text: `[${d.src.ip}] ${d.src.city.toUpperCase()}`, 
+        
+        color: 'rgba(255, 60, 60, 0.9)', 
         size: 0.5,
         dotRadius: 0.3
       }));
