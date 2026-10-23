@@ -1,160 +1,304 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import Globe from 'react-globe.gl';
-import io from 'socket.io-client';
+import { useThreatFeed } from './hooks/useThreatFeed';
+import { deriveStatus, formatTime } from './lib/status';
+import {
+  filterObservations,
+  groupObservations,
+  locationLabel,
+  pickDemoDestination,
+  visibleLabelGroups,
+} from './lib/grouping';
+import {
+  BASIS_LABELS,
+  CATEGORIES,
+  DEMO_DESTINATIONS,
+  GLOBE_IMAGES,
+  SELECTED_COLOR,
+  SIMULATED_COLOR,
+  categoryOf,
+} from './theme';
+import './styles.css';
 
-const BACKEND_URL = process.env.REACT_APP_BACKEND_URL || 'http://127.0.0.1:4000';
+const prefersReducedMotion = () =>
+  typeof window !== 'undefined' && window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
 
-const socket = io(BACKEND_URL, {
-  transports: ['websocket'],
-  upgrade: false
-});
+const num = (n) => (n === null || n === undefined ? '—' : n.toLocaleString());
+
+function Header({ status, feed, count, mapped }) {
+  return (
+    <header className="header">
+      <div className="brand">
+        <h1>CyberThreatMap</h1>
+        <p>SANS ISC source activity · aggregated reports · refreshed every {Math.round((feed?.intervalMs || 60000) / 1000)}s</p>
+      </div>
+      <div className="status" role="status" aria-live="polite">
+        <span className={`dot dot-${status.tone}`} aria-hidden="true" />
+        <span>{status.label}</span>
+        <span className="muted">
+          {feed ? ` · ${count} sources (${mapped} mapped) · updated ${formatTime(feed.lastSuccessAt)}` : ''}
+        </span>
+      </div>
+    </header>
+  );
+}
+
+function Legend({ simulated }) {
+  return (
+    <div className="legend" aria-label="Legend">
+      {Object.entries(CATEGORIES).map(([key, c]) => (
+        <div key={key} className="legend-row" title={c.description}>
+          <span className="swatch" style={{ background: c.color }} /> {c.label}
+        </div>
+      ))}
+      <div className="legend-row"><span className="swatch ring" style={{ borderColor: CATEGORIES.unknown.color }} /> Pulse = activity at location</div>
+      <div className="legend-row"><span className="swatch" style={{ background: SELECTED_COLOR }} /> Selected</div>
+      {simulated && (
+        <div className="legend-row sim"><span className="line" style={{ background: SIMULATED_COLOR }} /> Simulated route (not real)</div>
+      )}
+      <div className="legend-note">Marker size ∝ total reports. Locations are approximate GeoIP.</div>
+    </div>
+  );
+}
+
+function DetailCard({ selection, observations, groups, onClose, onSelectObs }) {
+  if (!selection) return null;
+
+  if (selection.type === 'group') {
+    const group = groups.find((g) => g.key === selection.key);
+    if (!group) return null;
+    return (
+      <aside className="detail" aria-label="Location details">
+        <button className="close" onClick={onClose} aria-label="Close details">×</button>
+        <h2>{group.label}</h2>
+        <p className="muted">{group.observations.length} reported source(s) · {num(group.totalReports)} reports · {group.precision}-level GeoIP</p>
+        <ul className="ip-list">
+          {group.observations.map((o) => (
+            <li key={o.id}><button className="link" onClick={() => onSelectObs(o)}>{o.observedEntity.ip}</button> <span className="muted">{num(o.metrics.reportCount)} reports</span></li>
+          ))}
+        </ul>
+      </aside>
+    );
+  }
+
+  const obs = observations.find((o) => o.id === selection.id);
+  if (!obs) return null;
+  const cat = categoryOf(obs);
+  return (
+    <aside className="detail" aria-label="Observation details">
+      <button className="close" onClick={onClose} aria-label="Close details">×</button>
+      <h2>{obs.observedEntity.ip}</h2>
+      <p className="muted">{locationLabel(obs.geo)}{obs.geo.precision !== 'unknown' ? ` · ${obs.geo.precision}-level GeoIP (approximate)` : ''}</p>
+      <dl>
+        <dt>Reports</dt><dd>{num(obs.metrics.reportCount)}</dd>
+        <dt>Targets</dt><dd>{num(obs.metrics.targetCount)}</dd>
+        <dt>First seen</dt><dd>{obs.time.firstSeen || '—'}</dd>
+        <dt>Last seen</dt><dd>{obs.time.lastSeen || '—'}</dd>
+        <dt>Category</dt><dd><span className="swatch" style={{ background: cat.color }} /> {obs.classification.label}</dd>
+        <dt>Basis</dt><dd>{BASIS_LABELS[obs.classification.basis]}</dd>
+        <dt>Provider</dt><dd>SANS ISC / DShield</dd>
+        <dt>Fetched</dt><dd>{formatTime(obs.time.fetchedAt)}</dd>
+      </dl>
+      <p className="note">{obs.classification.evidence}</p>
+    </aside>
+  );
+}
+
+function Explorer({ observations, selectedId, onSelect, open }) {
+  const [query, setQuery] = useState('');
+  const [country, setCountry] = useState('');
+  const countries = useMemo(
+    () => [...new Set(observations.map((o) => o.geo.countryCode).filter(Boolean))].sort(),
+    [observations]
+  );
+  const rows = useMemo(() => filterObservations(observations, { query, country }), [observations, query, country]);
+
+  return (
+    <aside className={`explorer ${open ? 'open' : ''}`} aria-label="Current source observations">
+      <h2>Current source observations</h2>
+      <p className="muted">Aggregated SANS ISC records, in provider order — not a live event stream.</p>
+      <div className="filters">
+        <input type="search" placeholder="Search IP" aria-label="Search IP" value={query} onChange={(e) => setQuery(e.target.value)} />
+        <select aria-label="Filter by country" value={country} onChange={(e) => setCountry(e.target.value)}>
+          <option value="">All countries</option>
+          {countries.map((c) => <option key={c} value={c}>{c}</option>)}
+        </select>
+      </div>
+      <ul className="rows">
+        {rows.length === 0 && <li className="empty">{observations.length === 0 ? 'No observations in the latest snapshot.' : 'No matches.'}</li>}
+        {rows.map((o) => (
+          <li key={o.id}>
+            <button className={`row ${o.id === selectedId ? 'selected' : ''}`} onClick={() => onSelect(o)}>
+              <span className="swatch" style={{ background: categoryOf(o).color }} />
+              <span className="row-main">
+                <span className="ip">{o.observedEntity.ip}</span>
+                <span className="muted">{locationLabel(o.geo)}</span>
+              </span>
+              <span className="row-metric">{num(o.metrics.reportCount)}<small>reports</small></span>
+            </button>
+          </li>
+        ))}
+      </ul>
+    </aside>
+  );
+}
 
 function App() {
   const globeEl = useRef();
-  const [attacks, setAttacks] = useState([]);
-  const [status, setStatus] = useState('Connecting...');
-  const [globeLabels, setGlobeLabels] = useState([]);
+  const { socketState, snapshot } = useThreatFeed();
+  const [selection, setSelection] = useState(null);
+  const [simulated, setSimulated] = useState(false);
+  const [explorerOpen, setExplorerOpen] = useState(false);
+  const [altitude, setAltitude] = useState(2.5);
+  const [size, setSize] = useState({ w: window.innerWidth, h: window.innerHeight });
+  const reduced = useMemo(prefersReducedMotion, []);
+
+  const observations = useMemo(() => snapshot?.observations || [], [snapshot]);
+  const feed = snapshot?.feed;
+  const status = deriveStatus(socketState, snapshot);
+  const groups = useMemo(() => groupObservations(observations), [observations]);
+
+  const selectedGroupKey = useMemo(() => {
+    if (!selection) return null;
+    if (selection.type === 'group') return selection.key;
+    return groups.find((g) => g.observations.some((o) => o.id === selection.id))?.key || null;
+  }, [selection, groups]);
+
+  const labelGroups = useMemo(() => visibleLabelGroups(groups, altitude, selectedGroupKey), [groups, altitude, selectedGroupKey]);
+  const ringGroups = useMemo(() => {
+    const top = groups.slice(0, 12);
+    const sel = groups.find((g) => g.key === selectedGroupKey);
+    return sel && !top.includes(sel) ? [...top, sel] : top;
+  }, [groups, selectedGroupKey]);
+
+  const simArcs = useMemo(
+    () => (simulated
+      ? groups.slice(0, 15).map((g) => ({ g, dst: pickDemoDestination(g.key, DEMO_DESTINATIONS) }))
+      : []),
+    [simulated, groups]
+  );
 
   useEffect(() => {
-    socket.on('connect', () => {
-      setStatus('CONNECTED: MONITORING');
-    });
-
-    socket.on('threat-data', (data) => {
-      setStatus('WARNING: THREATS DETECTED');
-      setAttacks(data);
-
-      // --- LABEL GENERATION (No Emojis!) ---
-      
-      // 1. Attackers (Red Text)
-      const attackers = data.map(d => ({
-        lat: d.src.lat,
-        lng: d.src.lng,
-        // --- NEW LABEL FORMAT ---
-        // Shows: [192.168.x.x] BERLIN
-        text: `[${d.src.ip}] ${d.src.city.toUpperCase()}`, 
-        
-        color: 'rgba(255, 60, 60, 0.9)', 
-        size: 0.5,
-        dotRadius: 0.3
-      }));
-
-      // 2. Targets (Cyan Text)
-      const uniqueTargets = new Map();
-      data.forEach(d => {
-        uniqueTargets.set(d.dst.name, {
-            lat: d.dst.lat,
-            lng: d.dst.lng,
-            text: `[HQ] ${d.dst.name.toUpperCase()}`, // Added [HQ] prefix for clarity
-            color: 'rgba(0, 255, 255, 1)', // Cyan
-            size: 0.8, // Bigger text
-            dotRadius: 0.8 // Bigger dot
-        });
-      });
-      
-      setGlobeLabels([...attackers, ...Array.from(uniqueTargets.values())]);
-    });
-
-    // Auto-rotate logic
-    if (globeEl.current) {
-      globeEl.current.controls().autoRotate = true;
-      globeEl.current.controls().autoRotateSpeed = 0.5;
-    }
-
-    return () => {
-      socket.off('connect');
-      socket.off('threat-data');
-    };
+    const onResize = () => setSize({ w: window.innerWidth, h: window.innerHeight });
+    window.addEventListener('resize', onResize);
+    return () => window.removeEventListener('resize', onResize);
   }, []);
 
+  const onGlobeReady = useCallback(() => {
+    const g = globeEl.current;
+    if (!g) return;
+    const controls = g.controls();
+    controls.autoRotate = !reduced;
+    controls.autoRotateSpeed = 0.4;
+    g.pointOfView({ lat: 20, lng: 10, altitude: 2.5 });
+  }, [reduced]);
+
+  const focus = useCallback((lat, lng, alt = 1.4) => {
+    const g = globeEl.current;
+    if (!g) return;
+    g.controls().autoRotate = false;
+    g.pointOfView({ lat, lng, altitude: alt }, reduced ? 0 : 800);
+  }, [reduced]);
+
+  const selectObs = useCallback((o) => {
+    setSelection({ type: 'obs', id: o.id });
+    setExplorerOpen(false);
+    if (o.geo.latitude !== null) focus(o.geo.latitude, o.geo.longitude);
+  }, [focus]);
+
+  const selectGroup = useCallback((g) => {
+    setSelection({ type: 'group', key: g.key });
+    focus(g.lat, g.lng, 1.2);
+  }, [focus]);
+
+  const resetView = () => {
+    setSelection(null);
+    const g = globeEl.current;
+    if (!g) return;
+    g.controls().autoRotate = !reduced;
+    g.pointOfView({ lat: 20, lng: 10, altitude: 2.5 }, reduced ? 0 : 800);
+  };
+
   return (
-    <div style={{ width: '100vw', height: '100vh', background: '#000', margin: 0, overflow: 'hidden' }}>
-      
-      {/* 1. TOP LEFT HUD */}
-      <div style={{
-        position: 'absolute', top: 20, left: 20, zIndex: 10,
-        fontFamily: 'monospace', color: '#00ff00',
-        pointerEvents: 'none'
-      }}>
-        <h2 style={{ margin: 0, textShadow: '0 0 5px #00ff00' }}>CYBER WAR ROOM</h2>
-        <div style={{ fontSize: '12px', color: '#ccc' }}>REAL-TIME SANS ISC FEED</div>
-        <br/>
-        <div>STATUS: {status}</div>
-        <div>ACTIVE VECTORS: {attacks.length}</div>
+    <div className="app">
+      <div className="globe-wrap">
+        <Globe
+          ref={globeEl}
+          width={size.w}
+          height={size.h}
+          onGlobeReady={onGlobeReady}
+          onZoom={(pov) => setAltitude(pov.altitude)}
+          globeImageUrl={GLOBE_IMAGES.earth}
+          backgroundImageUrl={GLOBE_IMAGES.sky}
+          atmosphereColor="#4fc3f7"
+          atmosphereAltitude={0.18}
+
+          pointsData={groups}
+          pointLat="lat"
+          pointLng="lng"
+          pointAltitude={0.012}
+          pointRadius={(g) => 0.2 + Math.min(0.6, Math.log10(g.totalReports + 10) / 10)}
+          pointColor={(g) => (g.key === selectedGroupKey ? SELECTED_COLOR : CATEGORIES.unknown.color)}
+          pointLabel={(g) => `${g.label} · ${g.observations.length} source(s)`}
+          onPointClick={selectGroup}
+
+          ringsData={reduced ? [] : ringGroups}
+          ringLat="lat"
+          ringLng="lng"
+          ringColor={() => (t) => `rgba(79,195,247,${1 - t})`}
+          ringMaxRadius={4}
+          ringPropagationSpeed={2}
+          ringRepeatPeriod={1400}
+
+          labelsData={labelGroups}
+          labelLat="lat"
+          labelLng="lng"
+          labelText="label"
+          labelSize={0.55}
+          labelDotRadius={0}
+          labelAltitude={0.02}
+          labelColor={(g) => (g.key === selectedGroupKey ? SELECTED_COLOR : 'rgba(225,240,255,0.9)')}
+          labelResolution={2}
+          onLabelClick={selectGroup}
+
+          arcsData={simArcs}
+          arcStartLat={(a) => a.g.lat}
+          arcStartLng={(a) => a.g.lng}
+          arcEndLat={(a) => a.dst.lat}
+          arcEndLng={(a) => a.dst.lng}
+          arcColor={() => [SIMULATED_COLOR, 'rgba(255,138,101,0.1)']}
+          arcDashLength={0.4}
+          arcDashGap={1}
+          arcDashAnimateTime={reduced ? 0 : 2500}
+          arcStroke={0.35}
+          arcLabel={() => 'SIMULATED ROUTE · illustrative only'}
+        />
       </div>
 
-      {/* 2. BOTTOM RIGHT LEGEND (The Key) */}
-      <div style={{
-        position: 'absolute', bottom: 30, right: 30, zIndex: 10,
-        background: 'rgba(0, 10, 0, 0.8)',
-        border: '1px solid #333',
-        padding: '15px',
-        borderRadius: '5px',
-        fontFamily: 'monospace',
-        color: 'white',
-        minWidth: '200px'
-      }}>
-        <h4 style={{ margin: '0 0 10px 0', borderBottom: '1px solid #555', paddingBottom: '5px' }}>LEGEND</h4>
-        
-        {/* Legend Item: Honeypot */}
-        <div style={{ display: 'flex', alignItems: 'center', marginBottom: '8px' }}>
-          <div style={{ width: '12px', height: '12px', background: '#00ffff', borderRadius: '50%', marginRight: '10px', boxShadow: '0 0 5px #00ffff' }}></div>
-          <span style={{ fontSize: '12px' }}>HONEYPOT (Target)</span>
-        </div>
+      <Header status={status} feed={feed} count={feed?.observationCount ?? 0} mapped={feed?.mappedCount ?? 0} />
 
-        {/* Legend Item: Attacker */}
-        <div style={{ display: 'flex', alignItems: 'center', marginBottom: '8px' }}>
-          <div style={{ width: '12px', height: '12px', background: '#ff3c3c', borderRadius: '50%', marginRight: '10px' }}></div>
-          <span style={{ fontSize: '12px' }}>ATTACKER (Source)</span>
-        </div>
+      {simulated && <div className="sim-banner" role="alert">SIMULATED ROUTES · illustrative only · not source-to-target attack data</div>}
+      {feed?.status === 'error' && (
+        <div className="error-banner" role="alert">SANS ISC fetch failed ({feed.error?.code}). Retrying with backoff{feed.lastSuccessAt ? '; showing last good data.' : '.'}</div>
+      )}
+      {feed &&observations.length > feed.mappedCount && (
+        <div className="info-banner">{observations.length - feed.mappedCount} source(s) have no GeoIP location and appear in the list only.</div>
+      )}
 
-        {/* Legend Item: DDoS Line */}
-        <div style={{ display: 'flex', alignItems: 'center', marginBottom: '8px' }}>
-          <div style={{ width: '20px', height: '3px', background: '#ff0000', marginRight: '10px' }}></div>
-          <span style={{ fontSize: '12px' }}>HEAVY TRAFFIC (DDoS)</span>
-        </div>
-
-        {/* Legend Item: Port Scan Line */}
-        <div style={{ display: 'flex', alignItems: 'center' }}>
-          <div style={{ width: '20px', height: '3px', background: '#ff9900', marginRight: '10px' }}></div>
-          <span style={{ fontSize: '12px' }}>RECON (Port Scan)</span>
-        </div>
+      <div className="controls">
+        <button onClick={resetView}>Reset view</button>
+        <label className="toggle">
+          <input type="checkbox" checked={simulated} onChange={(e) => setSimulated(e.target.checked)} />
+          Simulated routes
+        </label>
+        <button className="mobile-only" onClick={() => setExplorerOpen((o) => !o)} aria-expanded={explorerOpen}>Sources</button>
       </div>
 
-      <Globe
-        ref={globeEl}
-        globeImageUrl="//unpkg.com/three-globe/example/img/earth-night.jpg"
-        backgroundImageUrl="//unpkg.com/three-globe/example/img/night-sky.png"
-        
-        arcsData={attacks}
-        arcStartLat={d => d.src.lat}
-        arcStartLng={d => d.src.lng}
-        arcEndLat={d => d.dst.lat}
-        arcEndLng={d => d.dst.lng}
-        arcColor={d => d.type === 'DDoS Flood' ? '#ff0000' : '#ff9900'}
-        arcDashLength={0.4}
-        arcDashGap={1}
-        arcDashAnimateTime={2000}
-        arcStroke={0.5}
+      <Legend simulated={simulated} />
+      <Explorer observations={observations} selectedId={selection?.type === 'obs' ? selection.id : null} onSelect={selectObs} open={explorerOpen} />
+      <DetailCard selection={selection} observations={observations} groups={groups} onClose={() => setSelection(null)} onSelectObs={selectObs} />
 
-        // RINGS for Impact
-        ringsData={attacks}
-        ringLat={d => d.dst.lat}
-        ringLng={d => d.dst.lng}
-        ringColor={() => '#00ffff'}
-        ringMaxRadius={6}
-        ringPropagationSpeed={3}
-        ringRepeatPeriod={800}
-
-        // LABELS
-        labelsData={globeLabels}
-        labelLat={d => d.lat}
-        labelLng={d => d.lng}
-        labelText={d => d.text}
-        labelColor={d => d.color}
-        labelSize={d => d.size}
-        labelDotRadius={d => d.dotRadius}
-      />
+      <footer className="credit">Data: <a href="https://isc.sans.edu" target="_blank" rel="noreferrer">SANS Internet Storm Center</a> (DShield) · GeoIP: MaxMind GeoLite via geoip-lite</footer>
     </div>
   );
 }
